@@ -6,14 +6,14 @@ import plotly.express as px
 from pathlib import Path
 
 # ---------------------------
-# Configuration
+# Configuration de la page
 # ---------------------------
 st.set_page_config(page_title="Classification Clients", page_icon="📊", layout="wide")
 st.title("🎯 Classification des Clients par Valeur")
 st.markdown("Prédisez la catégorie de valeur d'un client à partir de ses indicateurs RFM.")
 
 # ---------------------------
-# Chargement du modèle (avec cache et gestion d'erreur)
+# Chargement du modèle
 # ---------------------------
 @st.cache_resource
 def load_model():
@@ -26,12 +26,21 @@ def load_model():
 
 model, scaler = load_model()
 
-# Mapping des classes
-class_labels = {0: "Basse Valeur", 1: "Moyenne Valeur", 2: "Haute Valeur"}
-class_emojis  = {0: "🟡", 1: "🟠", 2: "🟢"}
+# ----- CORRECTION IMPORTANTE -----
+# Récupérer les noms des classes tels qu'ils existent dans le modèle
+class_names = list(model.classes_)   # ex: ['Basse Valeur', 'Moyenne Valeur', 'Haute Valeur']
+
+# Dictionnaire d'emojis (à adapter si vos noms de classes sont différents)
+emoji_map = {
+    'Basse Valeur': '🟡',
+    'Moyenne Valeur': '🟠',
+    'Haute Valeur': '🟢'
+}
+# S'assurer qu'il y a un emoji pour chaque classe, sinon mettre un emoji par défaut
+class_emojis = {name: emoji_map.get(name, '❓') for name in class_names}
 
 # ---------------------------
-# Initialisation du session state
+# Initialisation de l'historique
 # ---------------------------
 if 'history' not in st.session_state:
     st.session_state.history = []
@@ -62,65 +71,75 @@ if submitted:
     try:
         features = np.array([[recency, frequency, monetary]])
         features_scaled = scaler.transform(features)
+
+        # Ici prediction sera une chaîne (ex : "Haute Valeur")
         prediction = model.predict(features_scaled)[0]
         proba = model.predict_proba(features_scaled)[0]
 
-        # Sauvegarde dans l'historique
-        st.session_state.history.append({
-            "Recency": recency,
-            "Frequency": frequency,
-            "Monetary": monetary,
-            "Predicted": class_labels[prediction],
-            "Proba_Haute": proba[2],
-            "Proba_Moyenne": proba[1],
-            "Proba_Basse": proba[0]
-        })
+        # Vérification au cas où le modèle renverrait autre chose
+        if prediction not in class_emojis:
+            st.error(f"Classe inattendue : '{prediction}'. Vérifiez model.classes_")
+        else:
+            # Sauvegarde dans l'historique
+            st.session_state.history.append({
+                "Recency": recency,
+                "Frequency": frequency,
+                "Monetary": monetary,
+                "Predicted": prediction,
+                "Proba_Haute": proba[2] if len(class_names) > 2 else 0,
+                "Proba_Moyenne": proba[1] if len(class_names) > 1 else 0,
+                "Proba_Basse": proba[0]
+            })
 
-        # Affichage résultat principal
-        st.success(f"### {class_emojis[prediction]} Catégorie prédite : **{class_labels[prediction]}**")
+            # Affichage du résultat principal
+            emoji = class_emojis[prediction]
+            st.success(f"### {emoji} Catégorie prédite : **{prediction}**")
 
-        # Visualisation des probabilités
-        prob_df = pd.DataFrame({
-            "Classe": [class_labels[2], class_labels[1], class_labels[0]],
-            "Probabilité": [proba[2]*100, proba[1]*100, proba[0]*100]
-        }).sort_values("Probabilité", ascending=False)
+            # Tableau des probabilités
+            prob_df = pd.DataFrame({
+                "Classe": class_names,
+                "Probabilité (%)": [f"{p*100:.1f}" for p in proba]
+            })
 
-        col_chart, col_comment = st.columns([1, 1])
-        with col_chart:
-            fig = px.bar(
-                prob_df, x="Probabilité", y="Classe", orientation='h',
-                color="Classe",
-                color_discrete_map={"Haute Valeur": "green", "Moyenne Valeur": "orange", "Basse Valeur": "gold"},
-                title="Probabilités par classe",
-                range_x=[0, 100]
-            )
-            fig.update_layout(showlegend=False, height=250)
-            st.plotly_chart(fig, use_container_width=True)
+            col_chart, col_comment = st.columns([1, 1])
+            with col_chart:
+                # Graphique horizontal des probabilités
+                fig = px.bar(
+                    prob_df, x="Probabilité (%)", y="Classe", orientation='h',
+                    color="Classe",
+                    color_discrete_map={name: emoji_map.get(name, 'grey') for name in class_names},
+                    title="Probabilités par classe"
+                )
+                fig.update_layout(showlegend=False, height=250)
+                st.plotly_chart(fig, use_container_width=True)
 
-        with col_comment:
-            st.markdown("**Analyse comportementale :**")
-            if prediction == 2:
-                st.success("Client très récent, fréquent et/ou à fort montant. Fidélisez-le avec des offres VIP.")
-            elif prediction == 1:
-                st.info("Client régulier mais peut être amélioré. Relancez-le avec des promotions ciblées.")
-            else:
-                st.warning("Client à faible engagement. Essayez une campagne de réactivation.")
+            with col_comment:
+                st.markdown("**Analyse comportementale :**")
+                if prediction == "Haute Valeur":
+                    st.success("Client très récent, fréquent et/ou à fort montant. Fidélisez-le avec des offres VIP.")
+                elif prediction == "Moyenne Valeur":
+                    st.info("Client régulier mais peut être amélioré. Relancez-le avec des promotions ciblées.")
+                else:  # Basse Valeur
+                    st.warning("Client à faible engagement. Essayez une campagne de réactivation.")
 
-        # Affichage des métriques sous forme de cartes
-        m1, m2, m3 = st.columns(3)
-        m1.metric("🔁 Récence", f"{recency} jours")
-        m2.metric("📦 Fréquence", f"{frequency} commandes")
-        m3.metric("💰 Montant", f"{monetary:.2f} €")
+            # Cartes métriques
+            m1, m2, m3 = st.columns(3)
+            m1.metric("🔁 Récence", f"{recency} jours")
+            m2.metric("📦 Fréquence", f"{frequency} commandes")
+            m3.metric("💰 Montant", f"{monetary:.2f} €")
 
     except Exception as e:
         st.error(f"Erreur lors de la prédiction : {e}")
 
 # ---------------------------
-# Batch prediction (upload CSV)
+# Prédiction par lot (upload CSV)
 # ---------------------------
 st.markdown("---")
 st.subheader("📁 Prédiction par lot (CSV)")
-uploaded_file = st.file_uploader("Téléchargez un fichier avec les colonnes : Recency, Frequency, Monetary", type=["csv"])
+uploaded_file = st.file_uploader(
+    "Téléchargez un fichier avec les colonnes : Recency, Frequency, Monetary",
+    type=["csv"]
+)
 if uploaded_file is not None:
     try:
         df_input = pd.read_csv(uploaded_file)
@@ -134,20 +153,24 @@ if uploaded_file is not None:
             probas = model.predict_proba(features_scaled_batch)
 
             df_result = df_input.copy()
-            df_result["Catégorie"] = [class_labels[p] for p in predictions]
-            df_result["Probabilité (Haute)"]  = probas[:, 2].round(3)
-            df_result["Probabilité (Moyenne)"] = probas[:, 1].round(3)
-            df_result["Probabilité (Basse)"]  = probas[:, 0].round(3)
+            df_result["Catégorie"] = predictions
+            for i, name in enumerate(class_names):
+                df_result[f"Probabilité ({name})"] = probas[:, i].round(3)
 
             st.dataframe(df_result, use_container_width=True)
+
             csv = df_result.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Télécharger les résultats", csv, "predictions.csv", "text/csv")
 
-            # Graphique de distribution des classes
-            fig_dist = px.pie(names=df_result["Catégorie"].value_counts().index,
-                              values=df_result["Catégorie"].value_counts().values,
-                              title="Répartition des catégories prédites")
-            st.plotly_chart(fig_dist, use_container_width=True)
+            # Graphique de distribution des catégories
+            if not df_result.empty:
+                counts = df_result["Catégorie"].value_counts()
+                fig_dist = px.pie(
+                    names=counts.index,
+                    values=counts.values,
+                    title="Répartition des catégories prédites"
+                )
+                st.plotly_chart(fig_dist, use_container_width=True)
 
     except Exception as e:
         st.error(f"Erreur lors du traitement du fichier : {e}")
